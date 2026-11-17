@@ -17,9 +17,9 @@ import constant from '../const/constant';
 import { t } from '../i18n/i18n'
 import reqUtils from '../utils/req-utils';
 import {oauth} from "../entity/oauth";
-import oauthService from "./oauth-service";
 import settingService from './setting-service';
 import starService from './star-service';
+import verifyUtils from '../utils/verify-utils';
 
 const userService = {
 
@@ -60,11 +60,14 @@ const userService = {
 
 		const { password } = params;
 
-		if (password.length < 6) {
-			throw new BizError(t('pwdMinLength'));
+		if (!cryptoUtils.validPassword(password) || password.length < 15) {
+			throw new BizError('Use a password of at least 15 characters and at most 1024 UTF-8 bytes', 400);
 		}
 		const { salt, hash } = await cryptoUtils.hashPassword(password);
-		await orm(c).update(user).set({ password: hash, salt: salt }).where(eq(user.userId, userId)).run();
+		await c.env.db.batch([
+			c.env.db.prepare('UPDATE user SET password = ?, salt = ? WHERE user_id = ?').bind(hash, salt, userId),
+			c.env.db.prepare('DELETE FROM wisereply_session WHERE user_id = ?').bind(userId),
+		]);
 	},
 
 	selectByEmail(c, email) {
@@ -103,7 +106,10 @@ const userService = {
 			await c.env.kv.delete(kvConst.AUTH_INFO + userId)
 			return;
 		}
-		await orm(c).update(user).set({ isDel: isDel.DELETE }).where(eq(user.userId, userId)).run();
+		await c.env.db.batch([
+			c.env.db.prepare('UPDATE user SET is_del = 1 WHERE user_id = ?').bind(userId),
+			c.env.db.prepare('DELETE FROM wisereply_session WHERE user_id = ?').bind(userId),
+		]);
 		await c.env.kv.delete(kvConst.AUTH_INFO + userId)
 	},
 
@@ -112,7 +118,7 @@ const userService = {
 		userIds = userIds.split(',').map(Number);
 		await starService.removeByUserIds(c, userIds);
 		await accountService.physicsDeleteByUserIds(c, userIds);
-		await oauthService.deleteByUserIds(c, userIds);
+		await orm(c).delete(oauth).where(inArray(oauth.userId, userIds)).run();
 		await orm(c).delete(user).where(inArray(user.userId, userIds)).run();
 	},
 
@@ -275,16 +281,10 @@ const userService = {
 	async setStatus(c, params) {
 
 		const { status, userId } = params;
-
-		await orm(c)
-			.update(user)
-			.set({ status })
-			.where(eq(user.userId, userId))
-			.run();
-
-		if (status === userConst.status.BAN) {
-			await c.env.kv.delete(KvConst.AUTH_INFO + userId);
-		}
+		if (status !== userConst.status.NORMAL && status !== userConst.status.BAN) throw new BizError('Invalid status', 400);
+		const statements = [c.env.db.prepare('UPDATE user SET status = ? WHERE user_id = ?').bind(status, userId)];
+		if (status === userConst.status.BAN) statements.push(c.env.db.prepare('DELETE FROM wisereply_session WHERE user_id = ?').bind(userId));
+		await c.env.db.batch(statements);
 	},
 
 	async setType(c, params) {
@@ -324,13 +324,15 @@ const userService = {
 	async add(c, params) {
 
 		let { email, type, password } = params;
+		email = typeof email === 'string' ? email.trim().toLowerCase() : '';
 
-		if (!c.env.domain.includes(emailUtils.getDomain(email))) {
+		if (!verifyUtils.isEmail(email) || email.length > 254 || emailUtils.getName(email).length > 64 ||
+			!c.env.domain.includes(emailUtils.getDomain(email))) {
 			throw new BizError(t('notEmailDomain'));
 		}
 
-		if (password.length < 6) {
-			throw new BizError(t('pwdMinLength'));
+		if (!cryptoUtils.validPassword(password) || password.length < 15) {
+			throw new BizError('Use a password of at least 15 characters and at most 1024 UTF-8 bytes', 400);
 		}
 
 		const accountRow = await accountService.selectByEmailIncludeDel(c, email);
@@ -357,11 +359,13 @@ const userService = {
 
 		const { salt, hash } = await saltHashUtils.hashPassword(password);
 
-		const userId = await userService.insert(c, { email, password: hash, salt, type });
-
-		await userService.updateUserInfo(c, userId, true);
-
-		await accountService.insert(c, { userId: userId, email, type, name: emailUtils.getName(email) });
+		const [created] = await c.env.db.batch([
+			c.env.db.prepare('INSERT INTO user(email, password, salt, type) VALUES (?, ?, ?, ?) RETURNING user_id')
+				.bind(email, hash, salt, type),
+			c.env.db.prepare('INSERT INTO account(email, name, user_id) VALUES (?, ?, (SELECT user_id FROM user WHERE email = ?))')
+				.bind(email, emailUtils.getName(email), email),
+		]);
+		await userService.updateUserInfo(c, created.results[0].user_id, true);
 	},
 
 	async resetDaySendCount(c) {

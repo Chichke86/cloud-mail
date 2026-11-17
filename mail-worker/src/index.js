@@ -3,20 +3,13 @@ import { email } from './email/email';
 import userService from './service/user-service';
 import verifyRecordService from './service/verify-record-service';
 import emailService from './service/email-service';
-import r2Service from './service/r2-service';
-import oauthService from './service/oauth-service';
+import { clearExpiredSessions } from './security/session';
 import analysisService from './service/analysis-service';
-import { handleWsUpgrade } from './websocket/connect';
 export { MailHub } from './websocket/hub'; // Durable Object 必须从 Worker 入口导出
 export default {
 	 async fetch(req, env, ctx) {
 
 		const url = new URL(req.url)
-
-		// WebSocket：浏览器连 /api/realtime，转到 MailHub Durable Object
-		if (url.pathname === '/api/realtime') {
-			return handleWsUpgrade(req, env);
-		}
 
 		if (url.pathname.startsWith('/api/')) {
 			url.pathname = url.pathname.replace('/api', '')
@@ -24,16 +17,9 @@ export default {
 			return app.fetch(req, env, ctx);
 		}
 
-		if (url.pathname.startsWith('/oss/')) {
-			const key = url.pathname.slice('/oss/'.length);
-			const resp = await r2Service.toObjResp({ env }, key);
-			return resp || new Response('Not Found', { status: 404 });
+		if (/^\/(oss|static|attachments)(\/|$)/.test(url.pathname)) {
+			return new Response('Not Found', { status: 404, headers: { 'Cache-Control': 'no-store' } });
 		}
-
-		 if (['/static/','/attachments/'].some(p => url.pathname.startsWith(p))) {
-			 const resp = await r2Service.toObjResp({ env }, url.pathname.substring(1));
-			 return resp || new Response('Not Found', { status: 404 });
-		 }
 
 		return env.assets.fetch(req);
 	},
@@ -49,6 +35,6 @@ export default {
 		await emailService.completeReceiveAll({ env })
 		await emailService.autoClean({ env })
 		await analysisService.refreshEchartsCache({ env })
-		await oauthService.clearNoBindOathUser({ env })
+		await clearExpiredSessions(env);
 	},
 };

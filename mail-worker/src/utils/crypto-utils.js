@@ -1,40 +1,37 @@
-const encoder = new TextEncoder();
+import { scrypt, timingSafeEqual } from 'node:crypto';
+import { Buffer } from 'node:buffer';
 
-const saltHashUtils = {
+const version = 'scrypt-v1:';
+const options = { N: 32768, r: 8, p: 3, maxmem: 40 * 1024 * 1024 };
+const validPassword = (value) => typeof value === 'string' && value.length > 0 &&
+	new TextEncoder().encode(value).length <= 1024;
+const digest = (password, salt) => new Promise((resolve, reject) => {
+	scrypt(password, Buffer.from(salt, 'base64'), 32, options,
+		(error, key) => error ? reject(error) : resolve(key));
+});
 
-	generateSalt(length = 16) {
-		const array = new Uint8Array(length);
-		crypto.getRandomValues(array);
-		return btoa(String.fromCharCode(...array));
-	},
-
+const cryptoUtils = {
+	validPassword,
 
 	async hashPassword(password) {
-		const salt = this.generateSalt();
-		const hash = await this.genHashPassword(password, salt);
-		return { salt, hash };
+		if (!validPassword(password)) throw new TypeError('Invalid password length');
+		const salt = Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString('base64');
+		return { salt, hash: version + (await digest(password, salt)).toString('base64') };
 	},
 
-	async genHashPassword(password, salt) {
-		const data = encoder.encode(salt + password);
-		const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-		const hashArray = Array.from(new Uint8Array(hashBuffer));
-		return btoa(String.fromCharCode(...hashArray));
+	async verifyPassword(password, salt, hash) {
+		// Legacy hashes must be reset through the admin path; never authenticate SHA-256.
+		if (!validPassword(password) || typeof salt !== 'string' ||
+			!/^[A-Za-z0-9+/]{22}==$/.test(salt) || typeof hash !== 'string' ||
+			!hash.startsWith(version)) return false;
+		const stored = hash.slice(version.length);
+		if (!/^[A-Za-z0-9+/]{43}=$/.test(stored)) return false;
+		return timingSafeEqual(await digest(password, salt), Buffer.from(stored, 'base64'));
 	},
 
-	async verifyPassword(inputPassword, salt, storedHash) {
-		const hash = await this.genHashPassword(inputPassword, salt);
-		return hash === storedHash;
-	},
-
-	genRandomPwd(length = 8) {
-		const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-		let result = '';
-		for (let i = 0; i < length; i++) {
-			result += chars.charAt(Math.floor(Math.random() * chars.length));
-		}
-		return result;
+	genRandomPwd() {
+		return Buffer.from(crypto.getRandomValues(new Uint8Array(18))).toString('base64url');
 	}
 };
 
-export default saltHashUtils;
+export default cryptoUtils;

@@ -1,44 +1,37 @@
-import {defineConfig, loadEnv} from 'vite'
+import {defineConfig, loadEnv, normalizePath} from 'vite'
 import vue from '@vitejs/plugin-vue'
 import path from 'path'
 import AutoImport from 'unplugin-auto-import/vite'
 import Components from 'unplugin-vue-components/vite'
 import {ElementPlusResolver} from 'unplugin-vue-components/resolvers'
-import {VitePWA} from 'vite-plugin-pwa';
+import {cp} from 'node:fs/promises';
+
+function packagedEditor() {
+    let outDir
+    return {
+        name: 'packaged-tinymce',
+        apply: 'build',
+        configResolved(config) {
+            outDir = path.resolve(config.root, config.build.outDir, 'tinymce')
+        },
+        async closeBundle() {
+            const editor = new URL('./node_modules/tinymce/', import.meta.url)
+            await Promise.all(['tinymce.min.js', 'icons', 'models', 'plugins', 'skins', 'themes', 'license.md', 'notices.txt']
+                .map(name => cp(new URL(name, editor), normalizePath(path.join(outDir, name)), {recursive: true})))
+        },
+    }
+}
 
 export default defineConfig(({mode}) => {
     const env = loadEnv(mode, process.cwd(), 'VITE')
     return {
         server: {
-            host: true,
+            host: '127.0.0.1',
             port: 3001,
             hmr: true,
         },
         base: env.VITE_STATIC_URL || '/',
-        plugins: [vue(),
-            VitePWA({
-                injectRegister: 'script-defer',
-                manifest: {
-                    name: env.VITE_PWA_NAME,
-                    short_name: env.VITE_PWA_NAME,
-                    background_color: '#FFFFFF',
-                    theme_color: '#FFFFFF',
-                    icons: [
-                        {
-                            src: 'mail-pwa.png',
-                            sizes: '192x192',
-                            type: 'image/png',
-                        }
-                    ],
-                },
-                workbox: {
-                    disableDevLogs: true,
-                    globPatterns: [],
-                    runtimeCaching: [],
-                    navigateFallback: null,
-                    cleanupOutdatedCaches: true,
-                }
-            }),
+        plugins: [vue(), packagedEditor(),
             AutoImport({
                 resolvers: [ElementPlusResolver()],
             }),

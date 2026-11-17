@@ -8,7 +8,6 @@ import constant from '../const/constant';
 import BizError from '../error/biz-error';
 import {t} from '../i18n/i18n'
 import verifyRecordService from './verify-record-service';
-import userContext from '../security/user-context';
 import domainUtils from '../utils/domain-uitls';
 
 const settingService = {
@@ -17,8 +16,9 @@ const settingService = {
 		const settingRow = await orm(c).select().from(setting).get();
 		settingRow.resendTokens = JSON.parse(settingRow.resendTokens);
 		settingRow.r2Domain = '';
-		c.set('setting', settingRow);
+		c.set?.('setting', settingRow);
 		await c.env.kv.put(KvConst.SETTING, JSON.stringify(settingRow));
+		return settingRow;
 	},
 
 	async query(c) {
@@ -27,11 +27,9 @@ const settingService = {
 			return c.get('setting')
 		}
 
-		const setting = await c.env.kv.get(KvConst.SETTING, { type: 'json' });
-
-		if (!setting) {
-			throw new BizError('数据库未初始化 Database not initialized.');
-		}
+		const setting = (await c.env.kv.get(KvConst.SETTING, { type: 'json' })) || await this.refresh(c);
+		setting.register = 1;
+		setting.r2Domain = '';
 
 		let domainList = c.env.domain;
 
@@ -192,7 +190,6 @@ const settingService = {
 	async websiteConfig(c) {
 
 		const settingRow = await this.get(c);
-		const token = await userContext.getToken(c);
 
 		return {
 			register: settingRow.register,
@@ -205,9 +202,9 @@ const settingService = {
 			send: settingRow.send,
 			r2Domain: settingRow.r2Domain,
 			siteKey: settingRow.siteKey,
-			background: settingRow.background,
+			background: '',
 			loginOpacity: settingRow.loginOpacity,
-			domainList: settingRow.loginDomain === 1 && !token ? [] : settingRow.domainList,
+			domainList: settingRow.loginDomain === 1 && !c.get('user') ? [] : settingRow.domainList,
 			regKey: settingRow.regKey,
 			regVerifyOpen: settingRow.regVerifyOpen,
 			addVerifyOpen: settingRow.addVerifyOpen,
@@ -220,12 +217,12 @@ const settingService = {
 			noticeOffset: settingRow.noticeOffset,
 			notice: settingRow.notice,
 			loginDomain: settingRow.loginDomain,
-			linuxdoClientId: settingRow.linuxdoClientId,
-			linuxdoSwitch: settingRow.linuxdoSwitch,
-			githubClientId: settingRow.githubClientId,
-			githubSwitch: settingRow.githubSwitch,
-			googleClientId: settingRow.googleClientId,
-			googleSwitch: settingRow.googleSwitch,
+			linuxdoClientId: '',
+			linuxdoSwitch: 1,
+			githubClientId: '',
+			githubSwitch: 1,
+			googleClientId: '',
+			googleSwitch: 1,
 			minEmailPrefix: settingRow.minEmailPrefix,
 			projectLink: settingRow.projectLink
 		};

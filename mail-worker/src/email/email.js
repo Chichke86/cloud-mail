@@ -9,9 +9,6 @@ import { emailConst, isDel, settingConst } from '../const/entity-const';
 import emailUtils from '../utils/email-utils';
 import roleService from '../service/role-service';
 import userService from '../service/user-service';
-import telegramService from '../service/telegram-service';
-import aiService from '../service/ai-service';
-import webhookService from '../service/webhook-service';
 import { notifyMailWs } from '../websocket/notify';
 
 export async function email(message, env, ctx) {
@@ -20,23 +17,10 @@ export async function email(message, env, ctx) {
 
 		const {
 			receive,
-			tgChatId,
-			tgBotStatus,
-			forwardStatus,
-			forwardEmail,
-			webhookStatus,
-			webhookUrl,
-			webhookRetry,
-			webhookSecret,
-			ruleEmail,
-			ruleType,
 			r2Domain,
-			noRecipient,
 			blackSubject,
 			blackContent,
-			blackFrom,
-			aiCode,
-			aiCodeFilter
+			blackFrom
 		} = await settingService.query({ env });
 
 		if (receive === settingConst.receive.CLOSE) {
@@ -44,16 +28,11 @@ export async function email(message, env, ctx) {
 			return;
 		}
 
-		const reader = message.raw.getReader();
-		let content = '';
-
-		while (true) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			content += new TextDecoder().decode(value);
+		if (message.rawSize > 12 * 1024 * 1024) {
+			message.setReject('Message exceeds mailbox size limit');
+			return;
 		}
-
-		const email = await PostalMime.parse(content);
+		const email = await PostalMime.parse(await new Response(message.raw).arrayBuffer());
 
 
 		const blockFlag = checkBlock(blackSubject, blackContent, blackFrom, email);
@@ -72,15 +51,15 @@ export async function email(message, env, ctx) {
 			}
 		}
 
-		if (!account && noRecipient === settingConst.noRecipient.CLOSE) {
+		if (!account || account.isDel !== isDel.NORMAL) {
 			message.setReject('Recipient not found');
 			return;
 		}
 
-		let userRow = {}
-
-		if (account) {
-			 userRow = await userService.selectByIdIncludeDel({ env: env }, account.userId);
+		const userRow = await userService.selectByIdIncludeDel({ env }, account.userId);
+		if (!userRow || userRow.isDel !== isDel.NORMAL || userRow.status !== 0) {
+			message.setReject('Recipient not available');
+			return;
 		}
 
 		if (account && userRow.email !== env.admin) {
@@ -92,7 +71,7 @@ export async function email(message, env, ctx) {
 				return;
 			}
 
-			if(roleService.isBanEmail(banEmail, email.from.address)) {
+			if(roleService.isBanEmail(banEmail, email.from?.address || message.from)) {
 				message.setReject('The recipient is disabled from receiving emails.');
 				return;
 			}
@@ -105,7 +84,6 @@ export async function email(message, env, ctx) {
 		}
 
 		const toName = email.to.find(item => item.address === message.to)?.name || '';
-		const code = await aiService.extractCode({ env }, email, { aiCode, aiCodeFilter });
 		const fromAddress = email.from?.address || '';
 
 		const params = {
@@ -115,7 +93,6 @@ export async function email(message, env, ctx) {
 			name: email.from?.name || emailUtils.getName(fromAddress),
 			senderEmail: message.from || '',
 			subject: email.subject,
-			code,
 			content: email.html,
 			text: email.text,
 			cc: email.cc ? JSON.stringify(email.cc) : '[]',
@@ -164,46 +141,9 @@ export async function email(message, env, ctx) {
 		// 有账号才推个人收件箱；无人收件（无 account / userId=0）只推全部邮件。
 		notifyMailWs(env, ctx, emailRow);
 
-		if (ruleType === settingConst.ruleType.RULE) {
-
-			const emails = ruleEmail.split(',');
-
-			if (!emails.includes(message.to)) {
-				return;
-			}
-
-		}
-
-		//转发到TG
-		if (tgBotStatus === settingConst.tgBotStatus.OPEN && tgChatId) {
-			await telegramService.sendEmailToBot({ env }, emailRow)
-		}
-
-		//转发到其他邮箱
-		if (forwardStatus === settingConst.forwardStatus.OPEN && forwardEmail) {
-
-			const emails = forwardEmail.split(',');
-
-			await Promise.all(emails.map(async email => {
-
-				try {
-					await message.forward(email);
-				} catch (e) {
-					console.error(`转发邮箱 ${email} 失败：`, e);
-				}
-
-			}));
-
-		}
-
-		//转发到 Webhook
-		if (webhookStatus === settingConst.webhookStatus.OPEN && webhookUrl) {
-			await webhookService.sendEmail({ env }, emailRow, webhookUrl, webhookRetry, webhookSecret);
-		}
-
 	} catch (e) {
-		console.error('邮件接收异常: ', e);
-		throw e
+		console.error(JSON.stringify({ event: 'email_receive_error', kind: e.name }));
+		throw new Error('Email receive failed');
 	}
 }
 

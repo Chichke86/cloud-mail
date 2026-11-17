@@ -2,7 +2,8 @@ const fileUtils = {
 	getExtFileName(filename) {
 		try {
 			const index = filename.lastIndexOf('.');
-			return index !== -1 ? filename.slice(index) : '';
+			const ext = index !== -1 ? filename.slice(index) : '';
+			return /^\.[A-Za-z0-9_+-]{1,32}$/.test(ext) ? ext : '';
 		} catch (e) {
 			return ''
 		}
@@ -11,7 +12,7 @@ const fileUtils = {
 	async getBuffHash(buff) {
 		const hashBuffer = await crypto.subtle.digest('SHA-256', buff);
 		const hashArray = Array.from(new Uint8Array(hashBuffer));
-		return hashArray.slice(0, 16).map(b => b.toString(16).padStart(2, '0')).join('');
+		return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 	},
 
 	base64ToDataStr(base64) {

@@ -11,8 +11,15 @@ import perm from "@/perm/perm.js";
 const pinia = createPinia().use(piniaPersistedState)
 import i18n from "@/i18n/index.js";
 const app = createApp(App).use(pinia)
+// Drop private message/recipient caches written by older builds; keep explicit drafts.
+try {
+    localStorage.removeItem('email')
+    localStorage.removeItem('writer')
+} catch {
+    // Storage may be disabled by the browser.
+}
 await init()
 app.use(router).use(i18n).directive('perm',perm)
-app.config.devtools = true;
+app.config.devtools = import.meta.env.DEV;
 
 app.mount('#app');

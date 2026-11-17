@@ -73,7 +73,6 @@ export function createWsClient(scope) {
 		const protocol = httpUrl.protocol === 'https:' ? 'wss:' : 'ws:';
 		const path = `${httpUrl.pathname.replace(/\/$/, '')}/realtime`;
 		const wsUrl = new URL(`${protocol}//${httpUrl.host}${path}`);
-		wsUrl.searchParams.set('token', token);
 		if (scope && scope !== 'inbox') {
 			wsUrl.searchParams.set('scope', scope);
 		}

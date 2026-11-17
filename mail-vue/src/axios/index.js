@@ -9,7 +9,6 @@ let http = axios.create({
 
 http.interceptors.request.use(config => {
     const { lang } = useSettingStore();
-    config.headers.Authorization = `${localStorage.getItem('token')}`
     config.headers['accept-language'] = lang
     return config
 })
@@ -71,12 +70,17 @@ http.interceptors.response.use((res) => {
     },
     (error) => {
 
-        if (error.status === 403) {
-            location.reload();
-            return;
+        const noMsg = error.config?.noMsg;
+        const status = error.response?.status;
+        if (status === 401 && error.config?.url !== '/login') {
+            localStorage.removeItem('token')
+            router.replace('/login')
         }
-
-        const noMsg = error.config.noMsg;
+        if ([400, 401, 403, 429].includes(status)) {
+            const data = error.response.data;
+            if (!noMsg) ElMessage.error(data?.message || i18n.global.t('reqFailErrorMsg'))
+            return Promise.reject(data || error)
+        }
 
         if (noMsg) {
             return Promise.reject(error)

@@ -26,3 +26,7 @@ mail-vue/dist
 .wrangler
 .venv
 git-tools.js
+.dev.vars*
+*.sqlite*
+*.sql.local
+wrangler.wisereply.toml

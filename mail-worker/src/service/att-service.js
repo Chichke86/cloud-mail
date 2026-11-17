@@ -7,8 +7,7 @@ import fileUtils from '../utils/file-utils';
 import { attConst } from '../const/entity-const';
 import { parseHTML } from 'linkedom';
 import { v4 as uuidv4 } from 'uuid';
-import domainUtils from '../utils/domain-uitls';
-import settingService from "./setting-service";
+import { attachmentKey } from '../security/file-key';
 
 const attService = {
 
@@ -47,9 +46,7 @@ const attService = {
 		).all();
 	},
 
-	async toImageUrlHtml(c, content) {
-
-		const { r2Domain } = await settingService.query(c);
+	async toImageUrlHtml(c, content, userId) {
 
 		const { document } = parseHTML(content);
 
@@ -82,20 +79,15 @@ const attService = {
 			}
 
 			//邮件正文站内图片转cid附件
-			if (src && (src.startsWith(domainUtils.toOssDomain(r2Domain)) || src.startsWith('attachments/'))) {
+			const key = internalImageKey(src, c.req.url);
+			if (key) {
 
 				const cid = uuidv4().replace(/-/g, '')
 				img.setAttribute('src', 'cid:' + cid);
 
 				const attData = {};
 
-				if (src.startsWith(domainUtils.toOssDomain(r2Domain))) {
-					attData.key = src.replace(domainUtils.toOssDomain(r2Domain) + '/','');
-				}
-
-				if (src.startsWith('attachments/')) {
-					attData.key = src;
-				}
+				attData.key = key;
 
 				attData.contentId = cid;
 				attData.type = attConst.type.EMBED;
@@ -115,7 +107,7 @@ const attService = {
 
 		//查询已有内嵌url图片信息
 		const keys = [...new Set(imageDataList.filter(item => !item.content).map(item => item.key))];
-		const dbImageList  = await this.selectOneByKeys(c, keys);
+		const dbImageList  = await this.selectOneByKeys(c, keys, userId);
 
 		//设置给当前附件
 		await Promise.all(imageDataList.map(async image => {
@@ -213,6 +205,8 @@ const attService = {
 	},
 
 	async removeAttByField(c, fieldName, fieldValues) {
+		if (!['user_id', 'email_id', 'account_id'].includes(fieldName)) throw new TypeError('Invalid attachment field');
+		if (!fieldValues.length) return;
 
 		const sqlList = [];
 
@@ -266,12 +260,27 @@ const attService = {
 		await this.removeAttByField(c, "account_id", [accountId])
 	},
 
-	selectOneByKeys(c, keys) {
+	selectOneByKeys(c, keys, userId) {
 		if (!keys || keys.length === 0) {
 			return []
 		}
-		return orm(c).select().from(att).where(inArray(att.key, keys)).orderBy(desc(att.attId)).groupBy(att.key).all();
+		return orm(c).select().from(att).where(and(inArray(att.key, keys), eq(att.userId, userId)))
+			.orderBy(desc(att.attId)).groupBy(att.key).all();
 	}
 };
+
+function internalImageKey(src, requestUrl) {
+	if (!src) return null;
+	if (attachmentKey.test(src)) return src;
+	try {
+		const url = new URL(src, requestUrl);
+		const prefix = '/api/files/';
+		const key = url.pathname.slice(prefix.length);
+		return url.origin === new URL(requestUrl).origin &&
+			url.pathname.startsWith(prefix) && attachmentKey.test(key) ? key : null;
+	} catch {
+		return null;
+	}
+}
 
 export default attService;

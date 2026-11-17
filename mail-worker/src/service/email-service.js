@@ -9,7 +9,6 @@ import accountService from './account-service';
 import BizError from '../error/biz-error';
 import emailUtils from '../utils/email-utils';
 import fileUtils from '../utils/file-utils';
-import { Resend } from 'resend';
 import attService from './att-service';
 import { parseHTML } from 'linkedom';
 import userService from './user-service';
@@ -22,9 +21,6 @@ import { t } from '../i18n/i18n'
 import domainUtils from '../utils/domain-uitls';
 import account from "../entity/account";
 import { att } from '../entity/att';
-import telegramService from './telegram-service';
-import webhookService from './webhook-service';
-import forwardMime from '../utils/forward-mime';
 import verifyUtils from '../utils/verify-utils';
 import { notifyMailWsFromContext } from '../websocket/notify';
 
@@ -418,9 +414,9 @@ const emailService = {
 		ccEmail.forEach(address => takenAddress.add(address.toLowerCase()));
 		bccEmail = bccEmail.filter(address => !takenAddress.has(address.toLowerCase()));
 
-		const { resendTokens, r2Domain, send, domainList } = await settingService.query(c);
+		const { r2Domain, send, domainList } = await settingService.query(c);
 
-		let { imageDataList, html } = await attService.toImageUrlHtml(c, content);
+		let { imageDataList, html } = await attService.toImageUrlHtml(c, content, userId);
 
 		//判断是否关闭发件功能
 		if (send === settingConst.send.CLOSE) {
@@ -492,12 +488,10 @@ const emailService = {
 
 		}
 
-		const domain = emailUtils.getDomain(accountRow.email);
-		const resendToken = resendTokens[domain];
 		const useCloudflareEmail = !!c.env.email;
 
 		//如果接收方存在站外邮箱，又没有发信服务
-		if (!useCloudflareEmail && !resendToken && !allInternal) {
+		if (!useCloudflareEmail && !allInternal) {
 			throw new BizError(t('noSendProvider'));
 		}
 
@@ -515,7 +509,7 @@ const emailService = {
 
 			emailRow = await this.selectById(c, emailId);
 
-			if (!emailRow) {
+			if (!emailRow || emailRow.userId !== userId) {
 				throw new BizError(t('notExistEmailReply'));
 			}
 
@@ -551,7 +545,7 @@ const emailService = {
 
 		// sendParams 用于渠道请求，saveParams 保留保存记录所需的账号、权限和附件数据。
 		const context = {
-			separate, allInternal, useCloudflareEmail, resendToken, sendParams,
+			separate, sendParams,
 			saveParams: {
 				accountId, userId, name, subject, text, html,
 				sendEmail: accountRow.email,
@@ -562,15 +556,7 @@ const emailService = {
 			}
 		};
 
-		// 全部站内收件人走本地投递；存在站外收件人时优先 CF，其次 Resend。
-		let deliveries;
-		if (allInternal) {
-			deliveries = this.sendInternal(c, context);
-		} else if (useCloudflareEmail) {
-			deliveries = this.sendCloudflare(c, context);
-		} else {
-			deliveries = this.sendResend(c, context);
-		}
+		const deliveries = allInternal ? this.sendInternal(c, context) : this.sendCloudflare(c, context);
 
 		const emailResults = [];
 		let sendError = '';
@@ -609,8 +595,7 @@ const emailService = {
 		for (const receiveEmail of recipientGroups) {
 			const emailResult = await this.saveSentEmail(c, { ...saveParams, receiveEmail });
 			const inboxAddresses = [...receiveEmail, ...sendParams.ccEmail, ...sendParams.bccEmail];
-			const emailRowList = await this.HandleOnSiteEmail(c, inboxAddresses, emailResult, emailResult.attList);
-			await this.forwardOnSiteEmail(c, emailRowList, { sendParams: { ...sendParams, receiveEmail } });
+			await this.HandleOnSiteEmail(c, inboxAddresses, emailResult, emailResult.attList);
 			yield { emails: [emailResult] };
 		}
 	},
@@ -635,44 +620,6 @@ const emailService = {
 			});
 			yield { emails: [emailResult] };
 		}
-	},
-
-	// Resend 分开发送一次最多提交 100 封独立邮件，普通发送仍调用单封接口。
-	async *sendResend(c, { separate, resendToken, sendParams, saveParams }) {
-		if (separate && sendParams.receiveEmail.length > 100) {
-			throw new BizError(t('resendRecipientLimit'));
-		}
-		// 批量接口不支持附件，包含正文转换得到的内嵌附件。
-		if (separate && sendParams.attachments.length > 0) {
-			throw new BizError(t('resendSeparateAttachments'));
-		}
-		let result;
-		try {
-			result = separate
-				? await this.sendBatchByResend(resendToken, sendParams)
-				: await this.sendByResend(resendToken, sendParams);
-		} catch (error) {
-			if (!separate) throw error;
-			yield { error: { message: error.message } };
-			return;
-		}
-		if (result.error) {
-			yield { error: result.error };
-			return;
-		}
-		// 严格校验模式下，批量返回的邮件 ID 按提交顺序对应各收件人。
-		const items = separate
-			? sendParams.receiveEmail.map((address, index) => ({
-				receiveEmail: [address], id: result.data.data[index].id
-			}))
-			: [{ receiveEmail: sendParams.receiveEmail, id: result.data?.id }];
-		const emails = [];
-		for (const item of items) {
-			emails.push(await this.saveSentEmail(c, {
-				...saveParams, receiveEmail: item.receiveEmail, providerId: item.id
-			}));
-		}
-		yield { emails };
 	},
 
 	// 三个渠道共用的发件记录保存：恢复正文图片 URL、保存附件并更新发送计数。
@@ -732,29 +679,6 @@ const emailService = {
 		return emailResult;
 	},
 
-	// 附件已在 Resend 处理器中校验，批量接口为每位收件人构造独立邮件。
-	async sendBatchByResend(resendToken, params) {
-		const resend = new Resend(resendToken);
-		const sendForm = {
-			from: `${params.name} <${params.accountEmail}>`,
-			subject: params.subject,
-			text: params.text,
-			html: params.html
-		};
-		if (params.sendType === 'reply' && params.messageId) {
-			sendForm.headers = {
-				'in-reply-to': params.messageId,
-				'references': params.messageId
-			};
-		}
-		return resend.batch.send(params.receiveEmail.map(address => ({
-			...sendForm,
-			to: [address],
-			...(params.ccEmail.length > 0 ? { cc: params.ccEmail } : {}),
-			...(params.bccEmail.length > 0 ? { bcc: params.bccEmail } : {})
-		})), { batchValidation: 'strict' });
-	},
-
 	async sendByCloudflareEmail(c, params) {
 		const sendForm = {
 			from: { email: params.accountEmail, name: params.name },
@@ -799,36 +723,6 @@ const emailService = {
 		};
 	},
 
-	async sendByResend(resendToken, params) {
-		const resend = new Resend(resendToken);
-
-		const sendForm = {
-			from: `${params.name} <${params.accountEmail}>`,
-			to: [...params.receiveEmail],
-			subject: params.subject,
-			text: params.text,
-			html: params.html,
-			attachments: await this.toResendAttachments(params.attachments)
-		};
-
-		if (params.ccEmail.length > 0) {
-			sendForm.cc = [...params.ccEmail];
-		}
-
-		if (params.bccEmail.length > 0) {
-			sendForm.bcc = [...params.bccEmail];
-		}
-
-		if (params.sendType === 'reply') {
-			sendForm.headers = {
-				'in-reply-to': params.messageId,
-				'references': params.messageId
-			};
-		}
-
-		return await resend.emails.send(sendForm);
-	},
-
 	async toCloudflareAttachments(attachments) {
 		const arrayBufferAttachments = await this.toArrayBufferAttachments(attachments);
 
@@ -848,25 +742,6 @@ const emailService = {
 		});
 	},
 
-	async toResendAttachments(attachments = []) {
-		const result = [];
-
-		for (const attachment of attachments) {
-			const content = await this.toAttachmentBase64(attachment);
-			if (!content) {
-				continue;
-			}
-
-			result.push({
-				...attachment,
-				content,
-				contentType: attachment.contentType || attachment.mimeType || attachment.type || 'application/octet-stream'
-			});
-		}
-
-		return result;
-	},
-
 	async toArrayBufferAttachments(attachments = []) {
 		const result = [];
 
@@ -880,35 +755,6 @@ const emailService = {
 		}
 
 		return result;
-	},
-
-	async toAttachmentBase64(attachment) {
-		let content = attachment.content;
-
-		if (!content) {
-			return null;
-		}
-
-		if (typeof content === 'string') {
-			if (content.startsWith('data:')) {
-				content = content.split(',')[1] || content;
-			}
-			return content.replace(/\s+/g, '');
-		}
-
-		const arrayBuffer = await this.toAttachmentArrayBuffer(attachment);
-		if (!arrayBuffer) {
-			return null;
-		}
-
-		const bytes = new Uint8Array(arrayBuffer);
-		let binary = '';
-
-		for (let i = 0; i < bytes.length; i += 0x8000) {
-			binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-		}
-
-		return btoa(binary);
 	},
 
 	async toAttachmentArrayBuffer(attachment) {
@@ -1077,57 +923,6 @@ const emailService = {
 		await orm(c).update(email).set({ status, message: message }).where(eq(email.emailId, sendEmailData.emailId)).run();
 
 		return emailRowList;
-	},
-
-	//站内邮件不经过 email 事件，在这里按转发规则推送
-	async forwardOnSiteEmail(c, emailRowList, { sendParams }) {
-
-		const { tgBotStatus, tgChatId, forwardStatus, forwardEmail, webhookStatus, webhookUrl, webhookRetry, webhookSecret, ruleEmail, ruleType } = await settingService.query(c);
-
-		if (ruleType === settingConst.ruleType.RULE) {
-			const emails = ruleEmail.split(',');
-			emailRowList = emailRowList.filter(emailRow => emails.includes(emailRow.toEmail));
-		}
-
-		for (const emailRow of emailRowList) {
-
-			//转发到TG
-			if (tgBotStatus === settingConst.tgBotStatus.OPEN && tgChatId) {
-				await telegramService.sendEmailToBot(c, emailRow);
-			}
-
-			//转发到 Webhook
-			if (webhookStatus === settingConst.webhookStatus.OPEN && webhookUrl) {
-				await webhookService.sendEmail(c, emailRow, webhookUrl, webhookRetry, webhookSecret);
-			}
-
-		}
-
-		//转发到其他邮箱。发件人用站内实际发件人，信头收件人保留原收件人，信封送到已验证地址。
-		if (forwardStatus === settingConst.forwardStatus.OPEN && forwardEmail && emailRowList.length > 0) {
-
-			const addresses = forwardEmail.split(',').map(address => address.trim()).filter(Boolean);
-			const params = {
-				...sendParams,
-				attachments: await this.toCloudflareAttachments(sendParams.attachments || []),
-				receiveEmail: emailRowList.map(row => ({ address: row.toEmail, name: row.toName || '' })).filter(item => item.address)
-			};
-
-			await Promise.all(addresses.map(async address => {
-
-				try {
-					const result = await forwardMime.send(c.env.forward, params, address);
-					if (result?.error) {
-						console.error(`转发邮箱 ${address} 失败：`, result.error);
-					}
-				} catch (e) {
-					console.error(`转发邮箱 ${address} 失败：`, e);
-				}
-
-			}));
-
-		}
-
 	},
 
 	imgReplace(content, cidAttList, r2domain) {

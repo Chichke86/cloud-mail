@@ -5,12 +5,6 @@ import {emailConst} from "../const/entity-const";
 const dbInit = {
 	async init(c) {
 
-		const secret = c.req.param('secret');
-
-		if (secret !== c.env.jwt_secret) {
-			return c.text('❌ JWT secret mismatch');
-		}
-
 		await this.intDB(c);
 		await this.v1_1DB(c);
 		await this.v1_2DB(c);
@@ -35,8 +29,16 @@ const dbInit = {
 		await this.v3_4DB(c);
 		await this.v3_5DB(c);
 		await this.v3_5_1DB(c);
+		await c.env.db.batch([
+			c.env.db.prepare(`CREATE TABLE IF NOT EXISTS wisereply_session (
+				token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL, expires_at INTEGER NOT NULL
+			)`),
+			c.env.db.prepare('CREATE INDEX IF NOT EXISTS wisereply_session_user ON wisereply_session(user_id)'),
+			c.env.db.prepare('CREATE INDEX IF NOT EXISTS wisereply_session_expiry ON wisereply_session(expires_at)'),
+			c.env.db.prepare('CREATE INDEX IF NOT EXISTS wisereply_attachment_key ON attachments(key)'),
+			c.env.db.prepare('UPDATE setting SET register = 1'),
+		]);
 		await settingService.refresh(c);
-		return c.text('success');
 	},
 
 	async v3_5_1DB(c) {

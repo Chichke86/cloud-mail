@@ -25,9 +25,6 @@ export const useEmailStore = defineStore('email', {
             endDate: '',
         },
     }),
-    persist: {
-        pick: ['contentData'],
-    },
     actions: {
         setSearchParams(params) {
             this.searchParams = {

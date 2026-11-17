@@ -5,6 +5,10 @@ export function cvtR2Url(key) {
         return ''
     }
 
+    if (key.startsWith('attachments/')) {
+        return '/api/files/attachments/' + encodeURIComponent(key.slice('attachments/'.length))
+    }
+
     if (key.startsWith('https://') || key.startsWith('http://')) {
         return key
     }

@@ -2,34 +2,18 @@ import { Hono } from 'hono';
 const app = new Hono();
 
 import result from '../model/result';
-import { cors } from 'hono/cors';
+import { bodyLimit } from 'hono/body-limit';
 
-app.use('*', cors());
+const tooLarge = (c) => c.json(result.fail('Request too large', 413), 413);
+app.use('/login', bodyLimit({ maxSize: 8192, onError: tooLarge }));
+app.use('/email/send', bodyLimit({ maxSize: 16 * 1024 * 1024, onError: tooLarge }));
 
 app.onError((err, c) => {
 	if (err.name === 'BizError') {
-		console.log(err.message);
-	} else {
-		console.error(err);
+		return c.json(result.fail(err.message, err.code), [401, 403, 429].includes(err.code) ? err.code : 200);
 	}
-
-	if (err.message === `Cannot read properties of undefined (reading 'get')`) {
-		return c.json(result.fail('KV数据库未绑定<br/>KV database not bound',502));
-	}
-
-	if (err.message === `Cannot read properties of undefined (reading 'put')`) {
-		return c.json(result.fail('KV数据库未绑定<br/>KV database not bound',502));
-	}
-
-	if (err.message === `Cannot read properties of undefined (reading 'prepare')`) {
-		return c.json(result.fail('D1数据库未绑定<br/>D1 database not bound',502));
-	}
-
-	if (err.message?.includes('D1_ERROR: no such column')) {
-		return c.json(result.fail('请按照文档更新数据库<br/>Please update the database as documented',502));
-	}
-
-	return c.json(result.fail(err.message, err.code));
+	console.error(JSON.stringify({ event: 'api_error', kind: err.name }));
+	return c.json(result.fail('Internal server error', 500), 500);
 });
 
 export default app;

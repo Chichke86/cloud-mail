@@ -1,0 +1,67 @@
+# Copy to the ignored wrangler.wisereply.toml and fill this in only for an explicitly approved environment.
+# Do not add this project to Workers Builds or wire up an automatic deployment.
+name = "wisereply-mail-replace"
+main = "src/index.js"
+account_id = "REPLACE_WITH_APPROVED_ACCOUNT_ID"
+compatibility_date = "2025-06-04"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = false
+preview_urls = false
+
+[[routes]]
+pattern = "mail.replace.invalid"
+custom_domain = true
+
+[[d1_databases]]
+binding = "db"
+database_name = "wisereply-mail-replace"
+database_id = "REPLACE_WITH_APPROVED_D1_ID"
+
+[[kv_namespaces]]
+binding = "kv"
+id = "REPLACE_WITH_APPROVED_KV_ID"
+
+[[r2_buckets]]
+binding = "r2"
+bucket_name = "replace-with-private-r2-bucket"
+
+# Add only after the approved From domain is verified for Cloudflare Email Sending.
+# [[send_email]]
+# name = "email"
+
+[assets]
+binding = "assets"
+directory = "./dist"
+not_found_handling = "single-page-application"
+run_worker_first = true
+
+[[durable_objects.bindings]]
+name = "ws"
+class_name = "MailHub"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["MailHub"]
+
+[[ratelimits]]
+name = "LOGIN_LIMIT"
+namespace_id = "73100403" # Choose an unused namespace ID in the approved account.
+simple = { limit = 8, period = 60 }
+
+[[ratelimits]]
+name = "API_LIMIT"
+namespace_id = "73100404"
+simple = { limit = 180, period = 60 }
+
+[observability]
+enabled = true
+logs = { enabled = true, invocation_logs = false }
+traces = { enabled = true, head_sampling_rate = 0.01 }
+
+[triggers]
+crons = ["0 * * * *"]
+
+[vars]
+domain = ["replace.invalid"]
+admin = "admin@replace.invalid"
+project_link = false
