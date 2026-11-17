@@ -25,6 +25,8 @@ const en = {
 	senderAccountNotExist: 'Sender email does not exist',
 	noResendToken: 'Resend API token not configured',
 	noSendProvider: 'Email sending service is not configured',
+	resendSendLimit: 'Resend sending limit reached. Try again later.',
+	resendSendFailed: 'Resend could not confirm the send. Check the provider before retrying.',
 	sendEmailNotCurUser: 'Sender email does not belong to current user',
 	notExistEmailReply: 'Mail does not exist and cannot be replied to',
 	imageAttLimit: 'The maximum number of image attachments is 10',

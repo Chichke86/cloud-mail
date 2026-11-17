@@ -23,6 +23,7 @@ import account from "../entity/account";
 import { att } from '../entity/att';
 import verifyUtils from '../utils/verify-utils';
 import { notifyMailWsFromContext } from '../websocket/notify';
+import { resendSender, sendResend } from './resend-outbound';
 
 const emailService = {
 
@@ -407,6 +408,8 @@ const emailService = {
 			attachments = [] //附件
 		} = params;
 
+		receiveEmail = this.normalizeAddressList(receiveEmail);
+		if (receiveEmail.length === 0) throw new BizError(t('notEmail'), 400);
 		ccEmail = this.normalizeAddressList(ccEmail);
 		bccEmail = this.normalizeAddressList(bccEmail);
 		const takenAddress = new Set((receiveEmail || []).map(item => String(item).toLowerCase()));
@@ -488,10 +491,12 @@ const emailService = {
 
 		}
 
-		const useCloudflareEmail = !!c.env.email;
+		const provider = allInternal ? null
+			: resendSender(c.env) === accountRow.email.toLowerCase() ? 'resend'
+			: c.env.email ? 'cloudflare' : null;
 
 		//如果接收方存在站外邮箱，又没有发信服务
-		if (!useCloudflareEmail && !allInternal) {
+		if (!provider && !allInternal) {
 			throw new BizError(t('noSendProvider'));
 		}
 
@@ -551,12 +556,12 @@ const emailService = {
 				sendEmail: accountRow.email,
 				ccEmail, bccEmail,
 				messageId: emailRow.messageId,
-				sendType, useCloudflareEmail, roleRow, r2Domain,
+				sendType, provider, roleRow, r2Domain,
 				imageDataList, attachments
 			}
 		};
 
-		const deliveries = allInternal ? this.sendInternal(c, context) : this.sendCloudflare(c, context);
+		const deliveries = allInternal ? this.sendInternal(c, context) : this.sendExternal(c, context);
 
 		const emailResults = [];
 		let sendError = '';
@@ -600,15 +605,18 @@ const emailService = {
 		}
 	},
 
-	// CF 发送：普通发送一次提交所有收件人，分开发送逐人调用并保存结果。
-	async *sendCloudflare(c, { separate, sendParams, saveParams }) {
+	// External sending uses one provider per message; never fall back after a failure.
+	async *sendExternal(c, { separate, sendParams, saveParams }) {
 		const recipientGroups = separate
 			? sendParams.receiveEmail.map(address => [address])
 			: [sendParams.receiveEmail];
 		for (const receiveEmail of recipientGroups) {
 			let result;
 			try {
-				result = await this.sendByCloudflareEmail(c, { ...sendParams, receiveEmail });
+				const params = { ...sendParams, receiveEmail };
+				result = saveParams.provider === 'resend'
+					? await sendResend(c.env, params, await this.toArrayBufferAttachments(params.attachments))
+					: await this.sendByCloudflareEmail(c, params);
 			} catch (error) {
 				if (!separate) throw error;
 				// 分开发送遇到渠道错误即停止，已成功的记录由入口汇总。
@@ -627,7 +635,7 @@ const emailService = {
 		const {
 			accountId, userId, name, subject, text, html, sendEmail, receiveEmail,
 			ccEmail = [], bccEmail = [],
-			providerId, messageId, sendType, useCloudflareEmail,
+			providerId, messageId, sendType, provider,
 			roleRow, r2Domain, attachments
 		} = params;
 		const imageDataList = params.imageDataList.map(item => ({
@@ -636,7 +644,7 @@ const emailService = {
 		const emailData = {
 			sendEmail, name, subject, text, accountId, userId,
 			content: this.imgReplace(html, imageDataList, r2Domain),
-			status: useCloudflareEmail ? emailConst.status.DELIVERED : emailConst.status.SENT,
+			status: provider === 'cloudflare' ? emailConst.status.DELIVERED : emailConst.status.SENT,
 			type: emailConst.type.SEND,
 			resendEmailId: providerId,
 			recipient: JSON.stringify(receiveEmail.map(address => ({ address, name: '' }))),

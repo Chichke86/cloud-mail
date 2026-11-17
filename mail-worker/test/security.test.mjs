@@ -23,7 +23,10 @@ const server = createTestHarness({
 			{ name: 'LOGIN_LIMIT', namespace_id: '73100411', simple: { limit: 8, period: 60 } },
 			{ name: 'API_LIMIT', namespace_id: '73100412', simple: { limit: 180, period: 60 } },
 		],
-		vars: { admin, domain: ['wisereply.example'], BOOTSTRAP_SECRET: secret, BOOTSTRAP_PASSWORD: password },
+		vars: {
+			admin, domain: ['wisereply.example'], BOOTSTRAP_SECRET: secret, BOOTSTRAP_PASSWORD: password,
+			RESEND_FROM: admin, RESEND_API_KEY: 're_synthetic_test',
+		},
 	} }],
 });
 
@@ -153,6 +156,68 @@ test('local Email Routing ingests a synthetic message for the intended mailbox',
 	const stored = await env.db.prepare('SELECT subject, to_email AS address FROM email WHERE subject = ?')
 		.bind('Local routing fixture').first();
 	assert.deepEqual(stored, { subject: 'Local routing fixture', address: peer });
+});
+
+test('Cloudflare receipt can be answered through opt-in Resend without reopening ingress or exposing secrets', async () => {
+	const source = 'sender@example.test';
+	const messageId = '<resend-thread@example.test>';
+	const { rejected } = await worker.email({ from: source, to: admin,
+		raw: `From: ${source}\r\nTo: ${admin}\r\nMessage-ID: ${messageId}\r\nSubject: Resend thread\r\n\r\nSynthetic inquiry` });
+	assert.equal(rejected, undefined);
+	const original = await env.db.prepare('SELECT account_id AS accountId, email_id AS emailId FROM email WHERE subject = ?')
+		.bind('Resend thread').first();
+	await expectOk(await call('/api/setting/set', json({ send: 0, resendTokens: { 'wisereply.example': 'ignored-test-token' } },
+		auth(adminCookie), 'PUT')));
+	const settings = await expectOk(await call('/api/setting/query', { headers: auth(adminCookie) }));
+	assert.equal(settings.hasResend, true);
+	assert.equal(settings.resendTokens, undefined);
+	assert.doesNotMatch(JSON.stringify(settings), /re_synthetic_test|ignored-test-token/);
+	const captures = async () => (await call('/resend-fixture')).json();
+	assert.deepEqual(await captures(), []);
+
+	const mail = {
+		...original, sendType: 'reply', receiveEmail: [source], subject: 'Re: Resend thread',
+		content: '<p>Synthetic reply</p>', text: 'Synthetic reply',
+		attachments: [{ content: 'Zml4dHVyZQ==', filename: 'reply.txt', size: 7, contentType: 'text/plain' }],
+	};
+	assert.equal((await call('/api/email/send', json(mail))).status, 401);
+	const peerAttempt = await call('/api/email/send', json(mail, auth(peerCookie)));
+	assert.notEqual((await peerAttempt.json()).code, 200);
+	const { userId } = await env.db.prepare('SELECT user_id AS userId FROM account WHERE account_id = ?')
+		.bind(original.accountId).first();
+	const { accountId } = await env.db.prepare(
+		'INSERT INTO account (email, user_id) VALUES (?, ?) RETURNING account_id AS accountId'
+	).bind('other@wisereply.example', userId).first();
+	const unapproved = await call('/api/email/send', json({ ...mail, accountId }, auth(adminCookie)));
+	assert.notEqual((await unapproved.json()).code, 200);
+	assert.deepEqual(await captures(), []);
+
+	const internal = await expectOk(await call('/api/email/send', json({
+		...mail, sendType: '', receiveEmail: [peer], subject: 'Internal fixture', attachments: [],
+	}, auth(adminCookie))));
+	assert.equal(internal[0].status, 1);
+	assert.deepEqual(await captures(), []);
+
+	const [saved] = await expectOk(await call('/api/email/send', json(mail, auth(adminCookie))));
+	assert.equal(saved.status, 1); // API acceptance, not confirmed delivery.
+	assert.equal(saved.resendEmailId, 'provider-fixture-id');
+	assert.equal(saved.inReplyTo, messageId);
+	const [outbound] = await captures();
+	assert.deepEqual(outbound, {
+		method: 'POST', authorized: true, redirect: 'error', payload: {
+			from: admin, to: [source], subject: mail.subject, text: mail.text, html: mail.content,
+			headers: { 'In-Reply-To': messageId, References: messageId },
+			attachments: [{ filename: 'reply.txt', content: 'Zml4dHVyZQ==', content_type: 'text/plain' }],
+		},
+	});
+	for (const [subject, code] of [['Provider quota', 429], ['Provider failure', 502]]) {
+		const response = await call('/api/email/send', json({ ...mail, subject }, auth(adminCookie)));
+		const responseText = await response.text();
+		assert.equal(JSON.parse(responseText).code, code);
+		assert.doesNotMatch(responseText, /sensitive|re_synthetic_test/);
+		assert.equal(await env.db.prepare('SELECT email_id FROM email WHERE subject = ?').bind(subject).first(), null);
+	}
+	assert.equal((await captures()).length, 3); // No fallback or automatic retries.
 });
 
 test('password reset revokes all prior sessions and logout invalidates the current session', async () => {

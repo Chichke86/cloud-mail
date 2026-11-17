@@ -9,12 +9,13 @@ import BizError from '../error/biz-error';
 import {t} from '../i18n/i18n'
 import verifyRecordService from './verify-record-service';
 import domainUtils from '../utils/domain-uitls';
+import { resendSender } from './resend-outbound';
 
 const settingService = {
 
 	async refresh(c) {
 		const settingRow = await orm(c).select().from(setting).get();
-		settingRow.resendTokens = JSON.parse(settingRow.resendTokens);
+		delete settingRow.resendTokens; // Legacy DB keys are not used or exposed.
 		settingRow.r2Domain = '';
 		c.set?.('setting', settingRow);
 		await c.env.kv.put(KvConst.SETTING, JSON.stringify(settingRow));
@@ -28,6 +29,7 @@ const settingService = {
 		}
 
 		const setting = (await c.env.kv.get(KvConst.SETTING, { type: 'json' })) || await this.refresh(c);
+		delete setting.resendTokens;
 		setting.register = 1;
 		setting.r2Domain = '';
 
@@ -75,15 +77,12 @@ const settingService = {
 
 		settingRow.secretKey = settingRow.secretKey ? `${settingRow.secretKey.slice(0, 6)}******` : null;
 
-		Object.keys(settingRow.resendTokens).forEach(key => {
-			settingRow.resendTokens[key] = `${settingRow.resendTokens[key].slice(0, 12)}******`;
-		});
-
 		settingRow.s3AccessKey = settingRow.s3AccessKey ? `${settingRow.s3AccessKey.slice(0, 12)}******` : null;
 		settingRow.s3SecretKey = settingRow.s3SecretKey ? `${settingRow.s3SecretKey.slice(0, 12)}******` : null;
 		settingRow.tgBotToken = settingRow.tgBotToken ? `${settingRow.tgBotToken.slice(0, 20)}******` : null;
 		settingRow.hasR2 = !!c.env.r2
 		settingRow.hasCfEmail = !!c.env.email
+		settingRow.hasResend = !!resendSender(c.env)
 
 		let regVerifyOpen = false
 		let addVerifyOpen = false
@@ -106,11 +105,8 @@ const settingService = {
 	},
 
 	async set(c, params) {
-		const settingData = await this.query(c);
-		let resendTokens = { ...settingData.resendTokens, ...params.resendTokens };
-		Object.keys(resendTokens).forEach(domain => {
-			if (!resendTokens[domain]) delete resendTokens[domain];
-		});
+		delete params.resendTokens;
+		delete params.hasResend;
 
 		if (Array.isArray(params.emailPrefixFilter)) {
 			params.emailPrefixFilter = params.emailPrefixFilter + '';
@@ -123,8 +119,6 @@ const settingService = {
 		if (params.webhookUrl !== undefined) {
 			params.webhookUrl = domainUtils.toOssDomain(params.webhookUrl) || '';
 		}
-
-		params.resendTokens = JSON.stringify(resendTokens);
 
 		if (params.autoRefresh !== undefined) {
 			params.autoRefresh = Number(params.autoRefresh) === 1 ? 1 : 2;
