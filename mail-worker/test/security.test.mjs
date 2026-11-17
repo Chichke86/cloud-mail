@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
-import { randomBytes } from 'node:crypto';
+import { generateKeyPairSync, randomBytes } from 'node:crypto';
 import { createTestHarness } from 'wrangler';
+import { SignJWT } from 'jose';
 
 const secret = randomBytes(32).toString('hex');
 const password = 'A test password with enough length';
@@ -10,8 +11,7 @@ const owner = "o'neal@wisereply.example";
 const peer = 'peer@wisereply.example';
 const origin = 'https://localhost';
 const legacy = 'legacy@wisereply.example';
-const server = createTestHarness({
-	workers: [{ config: {
+const workerConfig = {
 		name: 'wisereply-security-test', main: 'test/entry.js',
 		compatibility_date: '2025-06-04', compatibility_flags: ['nodejs_compat'],
 		d1_databases: [{ binding: 'db', database_id: '00000000-0000-4000-8000-000000000011' }],
@@ -27,8 +27,8 @@ const server = createTestHarness({
 			admin, domain: ['wisereply.example'], BOOTSTRAP_SECRET: secret, BOOTSTRAP_PASSWORD: password,
 			RESEND_FROM: admin, RESEND_API_KEY: 're_synthetic_test',
 		},
-	} }],
-});
+};
+const server = createTestHarness({ workers: [{ config: workerConfig }] });
 
 const worker = server.getWorker();
 let env;
@@ -228,4 +228,75 @@ test('password reset revokes all prior sessions and logout invalidates the curre
 	assert.equal((await call(fileRoute, { headers: auth(replacement) })).status, 200);
 	await expectOk(await call('/api/logout', { method: 'DELETE', headers: auth(replacement) }));
 	assert.equal((await call(fileRoute, { headers: auth(replacement) })).status, 401);
+});
+
+test('Access verifies the signed app identity, does not accept password fallback, and caps the mailbox session', async () => {
+	const operator = 'operator@example.test';
+	const issuer = 'https://fixture-team.cloudflareaccess.com';
+	const audience = 'a'.repeat(64);
+	const { publicKey, privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+	const signingKey = { ...publicKey.export({ format: 'jwk' }), alg: 'RS256', use: 'sig', kid: 'test-key' };
+	const accessServer = createTestHarness({ workers: [{ config: {
+		...workerConfig, name: 'cloud-mail-access-test', r2_buckets: [],
+		vars: { ...workerConfig.vars, AUTH_MODE: 'access', ACCESS_TEAM: 'fixture-team',
+			ACCESS_AUD: audience, ACCESS_IDENTITY: operator, ACCESS_FIXTURE_JWKS: JSON.stringify({ keys: [signingKey] }) },
+	} }] });
+	try {
+		await accessServer.listen();
+		const accessWorker = accessServer.getWorker();
+		const fetch = (path, init) => accessWorker.fetch(origin + path, init);
+		assert.equal((await fetch('/bootstrap', { method: 'POST', headers: { Authorization: secret } })).status, 204);
+		assert.equal((await expectOk(await fetch('/api/setting/websiteConfig'))).accessLogin, true);
+		assert.equal((await fetch('/api/login', json({ email: admin, password }))).status, 401);
+		const now = Math.floor(Date.now() / 1000);
+		const expiresAt = now + 180;
+		const claims = { iss: issuer, aud: [audience], email: operator, type: 'app', exp: expiresAt, iat: now - 10, nbf: now - 10 };
+		const signed = (overrides = {}) => new SignJWT({ ...claims, ...overrides })
+			.setProtectedHeader({ alg: 'RS256', kid: 'test-key' }).sign(privateKey);
+		const access = token => ({ 'Cf-Access-Jwt-Assertion': token });
+		const goodToken = await signed();
+		const [head, body, signature] = goodToken.split('.');
+		const tampered = [head, body, (signature[0] === 'A' ? 'B' : 'A') + signature.slice(1)].join('.');
+		for (const token of [tampered, await signed({ aud: ['b'.repeat(64)] }), await signed({ iss: 'https://other.example' }),
+			await signed({ email: 'other@example.test' }), await signed({ exp: now - 1 }), await signed({ type: 'org' })]) {
+			const reject = await fetch('/api/login', json({}, access(token)));
+			assert.equal(reject.status, 401);
+			assert.equal(reject.headers.get('Set-Cookie'), null);
+		}
+		const login = await fetch('/api/login', json({}, access(goodToken)));
+		assert.deepEqual(await expectOk(login.clone()), { token: 'session' });
+		const cookie = login.headers.get('Set-Cookie');
+		assert.match(cookie, /; Max-Age=1[0-9]{2}\b/);
+		const data = await accessWorker.getEnv();
+		assert.deepEqual(await data.db.prepare('SELECT expires_at FROM wisereply_session').first(), { expires_at: expiresAt });
+		const who = '/api/my/loginUserInfo';
+		const session = cookie.split(';')[0];
+		assert.equal((await fetch(who, { headers: auth(session) })).status, 401);
+		assert.equal((await fetch(who, { headers: access(goodToken) })).status, 401);
+		const both = auth(session, access(goodToken));
+		assert.equal((await expectOk(await fetch(who, { headers: both }))).email, admin);
+		assert.equal((await fetch('/api/my/resetPassword', json({ password }, both, 'PUT'))).status, 404);
+
+		const sender = 'sender@example.test';
+		const ingress = await accessWorker.email({ from: sender, to: admin,
+			raw: `From: ${sender}\r\nTo: ${admin}\r\nMessage-ID: <access-thread@example.test>\r\nSubject: Access fixture\r\n\r\nInquiry` });
+		assert.equal(ingress.rejected, undefined);
+		const { accountId, emailId } = await data.db.prepare('SELECT account_id AS accountId, email_id AS emailId FROM email WHERE subject = ?')
+			.bind('Access fixture').first();
+		await expectOk(await fetch('/api/setting/set', json({ send: 0 }, both, 'PUT')));
+		const [sent] = await expectOk(await fetch('/api/email/send', json({
+			accountId, emailId, sendType: 'reply', receiveEmail: [sender], subject: 'Re: Access fixture',
+			content: '<p>Answer</p>', text: 'Answer',
+			attachments: [{ content: 'Zml4dHVyZQ==', filename: 'reply.txt', size: 7, contentType: 'text/plain' }],
+		}, both)));
+		assert.equal(sent.resendEmailId, 'provider-fixture-id');
+		const attachment = '/api/files/' + sent.attList[0].key;
+		assert.equal((await fetch(attachment, { headers: both })).status, 200);
+		assert.equal((await fetch(attachment, { headers: auth(session) })).status, 401);
+
+		await expectOk(await fetch('/api/logout', { method: 'DELETE', headers: both }));
+		assert.equal((await fetch(who, { headers: both })).status, 401);
+	} finally {
+		await accessServer.close();
+	}
 });

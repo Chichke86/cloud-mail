@@ -4,7 +4,11 @@ export { MailHub } from '../src/index';
 
 // Capture the provider wire format in workerd without permitting real network calls.
 const resendRequests = [];
+let accessKeys;
 globalThis.fetch = async (url, options) => {
+	if (url === 'https://fixture-team.cloudflareaccess.com/cdn-cgi/access/certs' && accessKeys) {
+		return Response.json(accessKeys);
+	}
 	if (url !== 'https://api.resend.com/emails') throw new Error('Unexpected outbound request');
 	const payload = JSON.parse(options.body);
 	resendRequests.push({
@@ -25,6 +29,9 @@ export default {
 	fetch(request, env, ctx) {
 		const path = new URL(request.url).pathname;
 		if (path === '/resend-fixture') return Response.json(resendRequests);
+		if (path === '/bootstrap' && env.ACCESS_FIXTURE_JWKS) {
+			accessKeys = JSON.parse(env.ACCESS_FIXTURE_JWKS);
+		}
 		return path === '/bootstrap'
 			? bootstrap.fetch(request, env)
 			: production.fetch(request, env, ctx);

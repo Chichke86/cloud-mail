@@ -8,6 +8,16 @@ import { limit } from '../security/request-policy';
 app.post('/login', async (c) => {
 	const ip = c.req.header('CF-Connecting-IP') || 'unknown';
 	if (!await limit(c, 'LOGIN_LIMIT', 'ip:' + ip)) return c.json(result.fail('Try again later', 429), 429);
+	const access = c.get('accessIdentity');
+	if (access) {
+		const user = await userService.selectByEmailIncludeDel(c, c.env.admin);
+		if (user?.status !== 0 || user.isDel !== 0 || user.email !== c.env.admin) {
+			return c.json(result.fail('Mailbox unavailable', 403), 403);
+		}
+		if (c.get('sessionHash')) await endSession(c);
+		if (!await startSession(c, user, access.expiresAt)) return c.json(result.fail('Sign in required', 401), 401);
+		return c.json(result.ok({ token: 'session' }));
+	}
 	let params;
 	try { params = await c.req.json(); } catch {
 		return c.json(result.fail('Invalid request', 400), 400);

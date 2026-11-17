@@ -68,3 +68,8 @@ project_link = false
 # Optional alternative for this exact sender only. Provision RESEND_API_KEY as a
 # Worker secret after approval; do not add it here or enable Resend inbound.
 # RESEND_FROM = "contact@replace.invalid"
+# Password mode is the default. Configure MFA-backed Access on the Worker hostname first.
+# AUTH_MODE = "access"
+# ACCESS_TEAM = "replace-with-team-name"
+# ACCESS_AUD = "REPLACE_WITH_APPLICATION_AUD_TAG"
+# ACCESS_IDENTITY = "approved-operator@replace.invalid"

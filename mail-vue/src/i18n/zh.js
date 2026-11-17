@@ -1,4 +1,5 @@
 const zh = {
+    accessLogin: '通过 Cloudflare Access 继续',
     inbox: '收件箱',
     compose: '撰写邮件',
     drafts: '草稿箱',

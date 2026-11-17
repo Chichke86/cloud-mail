@@ -16,7 +16,12 @@
         <span class="form-title">{{ settingStore.settings.title }}</span>
         <span class="form-desc" v-if="show === 'login'">{{ $t('loginTitle') }}</span>
         <span class="form-desc" v-else>{{ $t('regTitle') }}</span>
-        <div v-show="show === 'login'">
+        <div v-if="settingStore.settings.accessLogin">
+          <el-button class="btn" type="primary" @click="submitAccess" :loading="loginLoading">
+            {{ $t('accessLogin') }}
+          </el-button>
+        </div>
+        <div v-else v-show="show === 'login'">
           <el-input :class="!hideLoginDomain ? 'email-input' : ''" v-model="form.email"
                     type="text" :placeholder="$t('emailAccount')" autocomplete="off" @keyup.enter="submit">
             <template #append v-if="!hideLoginDomain">
@@ -464,6 +469,14 @@ const submit = () => {
   login(email, form.password).then(async data => {
     await saveToken(data.token)
   }).finally(() => {
+    loginLoading.value = false
+  })
+}
+
+function submitAccess() {
+  if (loginLoading.value) return
+  loginLoading.value = true
+  login().then(data => saveToken(data.token)).finally(() => {
     loginLoading.value = false
   })
 }

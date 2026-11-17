@@ -10,6 +10,7 @@ import {t} from '../i18n/i18n'
 import verifyRecordService from './verify-record-service';
 import domainUtils from '../utils/domain-uitls';
 import { resendSender } from './resend-outbound';
+import { authMode } from '../security/access';
 
 const settingService = {
 
@@ -187,6 +188,7 @@ const settingService = {
 
 		return {
 			register: settingRow.register,
+			accessLogin: authMode(c.env) === 'access',
 			title: settingRow.title,
 			manyEmail: settingRow.manyEmail,
 			addEmail: settingRow.addEmail,

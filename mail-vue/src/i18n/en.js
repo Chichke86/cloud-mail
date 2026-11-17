@@ -1,4 +1,5 @@
 const en = {
+    accessLogin: 'Continue with Cloudflare Access',
     inbox: 'Inbox',
     compose: 'Compose',
     drafts: 'Drafts',

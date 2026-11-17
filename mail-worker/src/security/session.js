@@ -8,13 +8,16 @@ const digest = async (token) => Buffer.from(await crypto.subtle.digest('SHA-256'
 const cookieOptions = { path: '/', secure: true, httpOnly: true, sameSite: 'Strict' };
 const now = () => Math.floor(Date.now() / 1000);
 
-export async function startSession(c, user) {
+export async function startSession(c, user, expiresAt = Infinity) {
+	const start = now();
+	const maxAge = Math.min(ttl, Math.floor(expiresAt) - start);
+	if (maxAge <= 0) return false;
 	const token = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString('base64url');
 	const created = await c.env.db.prepare(`INSERT INTO wisereply_session(token_hash, user_id, expires_at)
 		SELECT ?, user_id, ? FROM user WHERE user_id = ? AND password = ? AND status = 0 AND is_del = 0`)
-		.bind(await digest(token), now() + ttl, user.userId, user.password).run();
+		.bind(await digest(token), start + maxAge, user.userId, user.password).run();
 	if (created.meta.changes !== 1) return false;
-	setCookie(c, cookie, token, { ...cookieOptions, maxAge: ttl });
+	setCookie(c, cookie, token, { ...cookieOptions, maxAge });
 	return true;
 }
 

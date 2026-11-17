@@ -3,8 +3,10 @@ import permService from '../service/perm-service';
 import app from '../hono/hono';
 import { authenticate } from './session';
 import { isSameOrigin, limit } from './request-policy';
+import { authMode, verifyAccess } from './access';
 
 const publicRoutes = new Set(['POST /login', 'GET /setting/websiteConfig']);
+const passwordRoutes = new Set(['PUT /my/resetPassword', 'POST /user/add', 'PUT /user/setPwd']);
 const permissions = new Map([
 	['POST /email/send', 'email:send'],
 	['DELETE /email/delete', 'email:delete'],
@@ -43,9 +45,17 @@ app.use('*', async (c, next) => {
 		return next();
 	}
 
+	const mode = authMode(c.env);
+	if (mode === 'invalid') throw new BizError('Sign-in is not configured', 403);
+	if (mode === 'access') {
+		if (passwordRoutes.has(route)) return c.notFound();
+		const access = await verifyAccess(c);
+		if (!access) throw new BizError('Cloudflare Access sign-in required', 401);
+		c.set('accessIdentity', access);
+	}
 	const user = await authenticate(c);
 	if (isPublic) return next();
-	if (!user) throw new BizError('Sign in required', 401);
+	if (!user || (mode === 'access' && user.email !== c.env.admin)) throw new BizError('Sign in required', 401);
 	c.set('user', user);
 	const admin = user.email === c.env.admin;
 	if (adminOnly && !admin) throw new BizError('Forbidden', 403);
