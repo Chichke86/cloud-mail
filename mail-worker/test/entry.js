@@ -5,22 +5,25 @@ export { MailHub } from '../src/index';
 // Capture the provider wire format in workerd without permitting real network calls.
 const resendRequests = [];
 let accessKeys;
-globalThis.fetch = async (url, options) => {
-	if (url === 'https://fixture-team.cloudflareaccess.com/cdn-cgi/access/certs' && accessKeys) {
+globalThis.fetch = async (request) => {
+	if (request === 'https://fixture-team.cloudflareaccess.com/cdn-cgi/access/certs' && accessKeys) {
 		return Response.json(accessKeys);
 	}
-	if (url !== 'https://api.resend.com/emails') throw new Error('Unexpected outbound request');
-	const payload = JSON.parse(options.body);
+	if (!(request instanceof Request) || request.url !== 'https://api.resend.com/emails') {
+		throw new Error('Unexpected outbound request');
+	}
+	const payload = await request.json();
 	resendRequests.push({
-		method: options.method,
-		authorized: options.headers.Authorization === 'Bearer re_synthetic_test',
-		redirect: options.redirect,
+		method: request.method,
+		authorized: request.headers.get('Authorization') === 'Bearer re_synthetic_test',
+		redirect: request.redirect,
 		payload,
 	});
 	if (payload.subject === 'Provider quota') {
 		return new Response('sensitive provider response', { status: 429 });
 	}
 	if (payload.subject === 'Provider failure') throw new Error('sensitive transport failure');
+	if (payload.subject === 'Provider redirect') return Response.redirect('https://example.test/redirect', 307);
 	return Response.json({ id: 'provider-fixture-id' });
 };
 

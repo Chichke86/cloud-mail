@@ -32,13 +32,15 @@ export async function sendResend(env, params, attachments) {
 	}
 
 	try {
-		const response = await fetch('https://api.resend.com/emails', {
+		const request = new Request('https://api.resend.com/emails', {
 			method: 'POST',
 			headers: { Authorization: `Bearer ${env.RESEND_API_KEY.trim()}`, 'Content-Type': 'application/json' },
 			body: JSON.stringify(payload),
-			redirect: 'error',
+			// Workers supports manual redirects. Any 3xx is rejected below without forwarding the key.
+			redirect: 'manual',
 			signal: AbortSignal.timeout(10_000)
 		});
+		const response = await fetch(request);
 		if (!response.ok) {
 			await response.body?.cancel();
 			if (response.status === 429) throw new BizError(t('resendSendLimit'), 429);

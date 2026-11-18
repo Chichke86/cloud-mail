@@ -204,20 +204,20 @@ test('Cloudflare receipt can be answered through opt-in Resend without reopening
 	assert.equal(saved.inReplyTo, messageId);
 	const [outbound] = await captures();
 	assert.deepEqual(outbound, {
-		method: 'POST', authorized: true, redirect: 'error', payload: {
+		method: 'POST', authorized: true, redirect: 'manual', payload: {
 			from: admin, to: [source], subject: mail.subject, text: mail.text, html: mail.content,
 			headers: { 'In-Reply-To': messageId, References: messageId },
 			attachments: [{ filename: 'reply.txt', content: 'Zml4dHVyZQ==', content_type: 'text/plain' }],
 		},
 	});
-	for (const [subject, code] of [['Provider quota', 429], ['Provider failure', 502]]) {
+	for (const [subject, code] of [['Provider quota', 429], ['Provider failure', 502], ['Provider redirect', 502]]) {
 		const response = await call('/api/email/send', json({ ...mail, subject }, auth(adminCookie)));
 		const responseText = await response.text();
 		assert.equal(JSON.parse(responseText).code, code);
 		assert.doesNotMatch(responseText, /sensitive|re_synthetic_test/);
 		assert.equal(await env.db.prepare('SELECT email_id FROM email WHERE subject = ?').bind(subject).first(), null);
 	}
-	assert.equal((await captures()).length, 3); // No fallback or automatic retries.
+	assert.equal((await captures()).length, 4); // No fallback or automatic retries.
 });
 
 test('password reset revokes all prior sessions and logout invalidates the current session', async () => {
