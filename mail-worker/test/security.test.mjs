@@ -26,6 +26,7 @@ const workerConfig = {
 		vars: {
 			admin, domain: ['wisereply.example'], BOOTSTRAP_SECRET: secret, BOOTSTRAP_PASSWORD: password,
 			RESEND_FROM: admin, RESEND_API_KEY: 're_synthetic_test',
+			INBOUND_FORWARD_MAILBOX: peer, INBOUND_FORWARD_DESTINATION: 'copy@example.test',
 		},
 };
 const server = createTestHarness({ workers: [{ config: workerConfig }] });
@@ -156,6 +157,13 @@ test('local Email Routing ingests a synthetic message for the intended mailbox',
 	const stored = await env.db.prepare('SELECT subject, to_email AS address FROM email WHERE subject = ?')
 		.bind('Local routing fixture').first();
 	assert.deepEqual(stored, { subject: 'Local routing fixture', address: peer });
+	const copies = async () => (await call('/forward-fixture')).json();
+	assert.deepEqual(await copies(), [{ to: 'copy@example.test', originalRecipient: peer, stored: 1 }]);
+	await worker.email({ from: 'sender@example.test', to: 'missing@wisereply.example',
+		raw: 'From: sender@example.test\r\nTo: missing@wisereply.example\r\nMessage-ID: <unknown@example.test>\r\nSubject: Unprovisioned recipient\r\n\r\nSynthetic body' });
+	assert.equal(await env.db.prepare('SELECT email_id FROM email WHERE subject = ?')
+		.bind('Unprovisioned recipient').first(), null);
+	assert.equal((await copies()).length, 1);
 });
 
 test('Cloudflare receipt can be answered through opt-in Resend without reopening ingress or exposing secrets', async () => {

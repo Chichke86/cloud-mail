@@ -4,6 +4,7 @@ export { MailHub } from '../src/index';
 
 // Capture the provider wire format in workerd without permitting real network calls.
 const resendRequests = [];
+const forwardedCopies = [];
 let accessKeys;
 globalThis.fetch = async (request) => {
 	if (request === 'https://fixture-team.cloudflareaccess.com/cdn-cgi/access/certs' && accessKeys) {
@@ -29,9 +30,24 @@ globalThis.fetch = async (request) => {
 
 export default {
 	...production,
+	email(message, env, ctx) {
+		return production.email({
+			from: message.from,
+			to: message.to,
+			raw: message.raw,
+			rawSize: message.rawSize,
+			setReject: (reason) => message.setReject(reason),
+			async forward(to, headers) {
+				const stored = await env.db.prepare('SELECT count(*) AS count FROM email WHERE to_email = ? AND is_del = 0')
+					.bind(message.to).first();
+				forwardedCopies.push({ to, originalRecipient: headers.get('X-Original-Recipient'), stored: stored.count });
+			},
+		}, env, ctx);
+	},
 	fetch(request, env, ctx) {
 		const path = new URL(request.url).pathname;
 		if (path === '/resend-fixture') return Response.json(resendRequests);
+		if (path === '/forward-fixture') return Response.json(forwardedCopies);
 		if (path === '/bootstrap' && env.ACCESS_FIXTURE_JWKS) {
 			accessKeys = JSON.parse(env.ACCESS_FIXTURE_JWKS);
 		}

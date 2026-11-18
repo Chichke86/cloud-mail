@@ -141,6 +141,16 @@ export async function email(message, env, ctx) {
 		// 有账号才推个人收件箱；无人收件（无 account / userId=0）只推全部邮件。
 		notifyMailWs(env, ctx, emailRow);
 
+		const forwardDestination = env.INBOUND_FORWARD_DESTINATION;
+		if (forwardDestination && message.to === env.INBOUND_FORWARD_MAILBOX && forwardDestination !== message.to) {
+			try {
+				await message.forward(forwardDestination, new Headers({ 'X-Original-Recipient': message.to }));
+			} catch {
+				// The original is already available in Cloud Mail. Don't retry SMTP delivery on a copy failure.
+				console.error(JSON.stringify({ event: 'inbound_copy_failed' }));
+			}
+		}
+
 	} catch (e) {
 		console.error(JSON.stringify({ event: 'email_receive_error', kind: e.name }));
 		throw new Error('Email receive failed');
